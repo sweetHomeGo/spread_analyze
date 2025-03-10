@@ -1,0 +1,8 @@
+*.csv
+*.feather
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+spread_charts/
+.conda/
