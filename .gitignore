@@ -4,5 +4,5 @@
 *.pyo
 *.pyd
 *.pyw
-spread_charts/
+*.png
 .conda/
