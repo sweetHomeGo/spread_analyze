@@ -41,11 +41,17 @@ def detect_close_column(df):
             return col
     return None
 
-def resolve_file_path(file_path):
-    """解析文件路径，尝试找到文件的实际位置"""
+def resolve_file_path(file_path, data_dir):
+    """解析文件路径，优先在data文件夹中查找文件"""
     # 如果是绝对路径，直接返回
     if os.path.isabs(file_path) and os.path.exists(file_path):
         return file_path
+    
+    # 首先在data目录查找文件
+    data_dir_path = os.path.join(data_dir, file_path)
+    if os.path.exists(data_dir_path):
+        print(f"在data目录找到文件: {data_dir_path}")
+        return data_dir_path
         
     # 尝试在当前目录查找文件
     if os.path.exists(file_path):
@@ -57,47 +63,29 @@ def resolve_file_path(file_path):
     if os.path.exists(script_dir_path):
         print(f"在脚本目录找到文件: {script_dir_path}")
         return script_dir_path
-        
-    # 尝试在上级目录查找文件
-    parent_dir = os.path.dirname(script_dir)
-    parent_dir_path = os.path.join(parent_dir, file_path)
-    if os.path.exists(parent_dir_path):
-        print(f"在上级目录找到文件: {parent_dir_path}")
-        return parent_dir_path
     
     # 如果以上都失败，返回原始路径
     print(f"无法找到文件: {file_path}")
     print(f"当前工作目录: {os.getcwd()}")
-    print(f"脚本目录: {script_dir}")
+    print(f"data目录: {data_dir}")
     
-    # 列出当前目录中的文件，帮助用户查看可用文件
-    print("\n当前目录下可用的文件:")
+    # 列出data目录中的文件，帮助用户查看可用文件
+    print("\ndata目录下可用的文件:")
     try:
-        files = os.listdir(os.getcwd())
+        files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
         for f in files:
-            if os.path.isfile(f):
-                print(f"- {f}")
+            print(f"- {f}")
     except Exception as e:
-        print(f"无法列出当前目录文件: {str(e)}")
-        
-    # 列出脚本目录中的文件
-    print("\n脚本目录下可用的文件:")
-    try:
-        files = os.listdir(script_dir)
-        for f in files:
-            if os.path.isfile(os.path.join(script_dir, f)):
-                print(f"- {f}")
-    except Exception as e:
-        print(f"无法列出脚本目录文件: {str(e)}")
+        print(f"无法列出data目录文件: {str(e)}")
     
     return file_path
 
-def load_market_data(file_path):
+def load_market_data(file_path, data_dir):
     """加载市场数据文件，智能识别格式和列"""
     print(f"尝试读取文件: {file_path}")
     
     # 解析并确认文件路径
-    resolved_path = resolve_file_path(file_path)
+    resolved_path = resolve_file_path(file_path, data_dir)
     print(f"解析后的文件路径: {resolved_path}")
     
     file_ext = os.path.splitext(resolved_path)[1].lower()
@@ -233,6 +221,29 @@ def find_common_timeframe(data_dict):
     
     return sorted(list(common_times))
 
+def ensure_dir(directory):
+    """确保目录存在，如果不存在则创建"""
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+        print(f"创建目录: {directory}")
+    return directory
+
+def calculate_rolling_correlation(df, variables, window_size=20):
+    """计算两个变量之间的滚动相关系数"""
+    if len(variables) < 2:
+        return None
+    
+    # 取前两个变量计算相关系数
+    var1, var2 = sorted(variables)[:2]
+    
+    # 确保数据按时间排序
+    df = df.sort_values('datetime')
+    
+    # 计算滚动相关系数
+    rolling_corr = df[f'close_{var1}'].rolling(window=window_size).corr(df[f'close_{var2}'])
+    
+    return rolling_corr
+
 def main():
     print("=" * 50)
     print("价差计算与分析工具")
@@ -240,38 +251,55 @@ def main():
     print(f"当前工作目录: {os.getcwd()}")
     print(f"脚本所在目录: {os.path.dirname(os.path.abspath(__file__))}")
     
+    # 创建数据、价差结果和图表的输出目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = ensure_dir(os.path.join(script_dir, "data"))
+    charts_dir = ensure_dir(os.path.join(script_dir, "charts"))
+    spreads_dir = ensure_dir(os.path.join(script_dir, "spreads"))  # 新增spreads目录
+    
     # 步骤1: 输入价差公式
     formula_str = input("请输入价差公式 (例如: A-B, A-2.5*B, 2*B-A-C): ").strip()
     variables, formula = parse_formula(formula_str)
     
     print(f"\n检测到公式中的变量: {', '.join(sorted(variables))}")
     
-    # 步骤2: 输入市场数据文件并确认时区
+    # 步骤2: 扫描数据文件并通过编号选择
     data_files = {}
     time_offsets = {}
     data_dict = {}
     
-    # 显示可用文件供参考
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    print("\n当前目录下可用的文件:")
+    # 扫描data目录下可用的文件并编号列出
+    available_files = []
     try:
-        files = [f for f in os.listdir(os.getcwd()) if os.path.isfile(f)]
-        for f in files:
-            print(f"- {f}")
+        files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+        if files:
+            print("\ndata目录下可用的文件:")
+            for i, f in enumerate(sorted(files), 1):
+                print(f"{i}. {f}")
+                available_files.append(f)
+        else:
+            print("data目录中没有文件")
+            return
     except Exception as e:
-        print(f"无法列出当前目录文件: {str(e)}")
+        print(f"无法列出data目录文件: {str(e)}")
+        return
     
-    print("\n脚本目录下可用的文件:")
-    try:
-        files = [f for f in os.listdir(script_dir) if os.path.isfile(os.path.join(script_dir, f))]
-        for f in files:
-            print(f"- {f}")
-    except Exception as e:
-        print(f"无法列出脚本目录文件: {str(e)}")
-    
+    # 通过编号选择文件
     for var in sorted(variables):
-        file_path = input(f"\n请输入变量 {var} 的市场数据文件路径: ").strip()
-        data_files[var] = file_path
+        valid_selection = False
+        while not valid_selection:
+            try:
+                file_index = input(f"\n请输入变量 {var} 对应的文件编号 (1-{len(available_files)}): ").strip()
+                file_index = int(file_index)
+                if 1 <= file_index <= len(available_files):
+                    selected_file = available_files[file_index-1]
+                    data_files[var] = os.path.join(data_dir, selected_file)
+                    print(f"已选择: {selected_file}")
+                    valid_selection = True
+                else:
+                    print(f"请输入有效的编号 (1-{len(available_files)})")
+            except ValueError:
+                print("请输入有效的数字编号")
         
         tz_offset = input(f"请输入 {var} 的时区偏移量(相对于UTC，如东八区为8，西五区为-5): ").strip()
         try:
@@ -286,9 +314,21 @@ def main():
         freq_input = "15min"
         print(f"使用默认时间精度: {freq_input}")
     
+    # 设置滚动窗口大小
+    window_size_input = input("\n请输入滚动相关性窗口大小 (默认值: 20): ").strip()
+    try:
+        window_size = int(window_size_input) if window_size_input else 20
+    except ValueError:
+        window_size = 20
+        print(f"无效的窗口大小，使用默认值: {window_size}")
+    
     # 步骤4: 设置时间范围
     start_date = input("\n请输入起始日期 (格式: YYYY-MM-DD): ").strip()
     end_date = input("请输入结束日期 (格式: YYYY-MM-DD): ").strip()
+    
+    # 创建文件名基础
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_base_name = f"spread_{formula_str.replace(' ', '').replace('*', 'x').replace('/', 'div')}_{timestamp}"
     
     # 检查日期格式
     try:
@@ -306,26 +346,103 @@ def main():
     
     try:
         for var in sorted(variables):
-            print(f"\n处理变量 {var} 的数据: {data_files[var]}")
+            print(f"\n处理变量 {var} 的数据: {os.path.basename(data_files[var])}")
             
             try:
-                df = load_market_data(data_files[var])
+                # 直接使用完整路径加载数据，不需要再次搜索
+                file_path = data_files[var]
+                print(f"读取文件: {file_path}")
+                
+                file_ext = os.path.splitext(file_path)[1].lower()
+                # 初始化df为None，用于错误检查
+                df = None
+                
+                if file_ext == '.csv':
+                    # 尝试不同的分隔符
+                    for sep in [',', '\t', ';']:
+                        try:
+                            print(f"尝试使用分隔符: '{sep}'")
+                            temp_df = pd.read_csv(file_path, sep=sep)
+                            if len(temp_df.columns) > 1:  # 成功解析为多列
+                                df = temp_df
+                                print(f"成功读取CSV文件，检测到{len(df.columns)}列")
+                                break
+                        except Exception as e:
+                            print(f"使用分隔符'{sep}'读取失败: {str(e)}")
+                            continue
+                elif file_ext == '.feather':
+                    try:
+                        df = pd.read_feather(file_path)
+                        print(f"成功读取Feather文件，检测到{len(df.columns)}列")
+                    except Exception as e:
+                        print(f"读取Feather文件失败: {str(e)}")
+                else:
+                    raise ValueError(f"不支持的文件格式: {file_ext}")
+                
+                # 检查df是否成功加载
+                if df is None or len(df) == 0:
+                    raise ValueError(f"无法读取文件: {file_path}，请检查文件格式是否正确")
+                
+                # 输出前几行数据供参考
+                print("文件前5行数据:")
+                print(df.head())
+                
+                # 输出所有列名供参考
+                print(f"文件列名: {', '.join(df.columns)}")
+                
+                # 智能检测时间和收盘价列
+                date_cols, time_cols, datetime_cols = detect_time_columns(df)
+                print(f"检测到的日期列: {date_cols}")
+                print(f"检测到的时间列: {time_cols}")
+                print(f"检测到的日期时间列: {datetime_cols}")
+                
+                close_col = detect_close_column(df)
+                print(f"检测到的收盘价列: {close_col}")
+                
+                if not close_col:
+                    # 尝试查找包含数字的列作为收盘价
+                    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                    if numeric_cols:
+                        close_col = numeric_cols[-1]  # 使用最后一个数值列
+                        print(f"未找到明确的收盘价列，使用数值列: {close_col}")
+                    else:
+                        raise ValueError(f"无法在{file_path}中找到收盘价列")
+                
+                # 处理时间列
+                if datetime_cols:  # 已有datetime列
+                    df['datetime'] = pd.to_datetime(df[datetime_cols[0]], errors='coerce')
+                elif date_cols and time_cols:  # 有单独的日期和时间列
+                    try:
+                        df['datetime'] = pd.to_datetime(df[date_cols[0]] + ' ' + df[time_cols[0]], errors='coerce')
+                    except:
+                        # 尝试其他格式
+                        try:
+                            df['datetime'] = pd.to_datetime(df[date_cols[0]])
+                        except:
+                            raise ValueError(f"无法解析日期时间格式: {date_cols[0]}和{time_cols[0]}")
+                elif date_cols:  # 只有日期列
+                    df['datetime'] = pd.to_datetime(df[date_cols[0]], errors='coerce')
+                else:
+                    # 尝试使用索引作为日期时间
+                    try:
+                        df['datetime'] = pd.to_datetime(df.index)
+                    except:
+                        raise ValueError(f"无法在{file_path}中找到时间列")
+                
+                # 检查datetime列是否有效
+                if df['datetime'].isna().all():
+                    raise ValueError(f"日期时间解析失败，所有值均为NaN")
+                
+                # 提取需要的列
+                result_df = df[['datetime', close_col]].copy()
+                result_df.rename(columns={close_col: 'close'}, inplace=True)
+                
+                # 移除日期时间为NaN的行
+                result_df = result_df.dropna(subset=['datetime'])
+                print(f"成功加载数据，共{len(result_df)}行")
                 
                 # 应用时区调整
-                df = align_timezone(df, time_offsets[var])
-                
-                # 过滤时间范围
-                if start_date and end_date:
-                    original_len = len(df)
-                    df = df[(df['datetime'] >= start_date) & (df['datetime'] <= end_date)]
-                    print(f"时间范围过滤: {original_len} -> {len(df)}行")
-                    
-                    if len(df) == 0:
-                        print(f"警告: 在指定时间范围内没有数据")
-                        continue
-                
-                # 重采样数据
-                df = resample_data(df, freq_input)
+                df = align_timezone(result_df, time_offsets[var])
                 
                 data_dict[var] = df
             except Exception as e:
@@ -367,6 +484,13 @@ def main():
                 spreads = calculate_spread(aligned_data, formula)
                 result_df['spread'] = spreads
                 
+                # 计算滚动相关系数（如果有至少两个变量）
+                if len(variables) >= 2:
+                    rolling_corr = calculate_rolling_correlation(result_df, variables, window_size)
+                    if rolling_corr is not None:
+                        result_df['rolling_corr'] = rolling_corr
+                        print(f"计算了滚动相关系数，窗口大小: {window_size}")
+                
                 # 基本统计分析
                 print("\n价差统计分析:")
                 spread_stats = {
@@ -380,23 +504,60 @@ def main():
                 for stat, value in spread_stats.items():
                     print(f"{stat}: {value:.4f}")
                 
+                # 如果有至少两个变量，计算相关系数
+                if len(variables) >= 2:
+                    var1, var2 = sorted(variables)[:2]
+                    correlation = result_df[f'close_{var1}'].corr(result_df[f'close_{var2}'])
+                    print(f"\n{var1}和{var2}的相关系数: {correlation:.4f}")
+                
+                # 保存结果数据到CSV文件 - 改为保存到spreads目录
+                csv_filename = f"{file_base_name}.csv"
+                output_csv = os.path.join(spreads_dir, csv_filename)  # 修改为保存到spreads目录
+                result_df.to_csv(output_csv, index=False)
+                print(f"价差数据已保存为: '{output_csv}'")
+                
                 # 数据可视化
                 print("\n创建可视化图表...")
                 
                 # 设置图表风格
                 sns.set(style="darkgrid")
                 
-                # 创建图形
-                fig, axes = plt.subplots(3, 1, figsize=(12, 15))
+                # 创建图形 - 如果有相关系数分析则创建4个子图，否则创建3个
+                if len(variables) >= 2 and 'rolling_corr' in result_df.columns:
+                    fig, axes = plt.subplots(4, 1, figsize=(12, 20))
+                else:
+                    fig, axes = plt.subplots(3, 1, figsize=(12, 15))
                 
-                # 1. 原始价格图
-                for var in sorted(variables):
-                    if var in aligned_data:
-                        axes[0].plot(result_df['datetime'], result_df[f'close_{var}'], label=var)
+                # 1. 原始价格图 - 使用双Y轴
+                if len(variables) >= 2:
+                    var1, var2 = sorted(variables)[:2]
+                    
+                    # 创建主Y轴（左侧）
+                    color1 = 'tab:blue'
+                    axes[0].set_ylabel(f'{var1} Price', color=color1)
+                    axes[0].plot(result_df['datetime'], result_df[f'close_{var1}'], color=color1, label=var1)
+                    axes[0].tick_params(axis='y', labelcolor=color1)
+                    
+                    # 创建次Y轴（右侧）
+                    color2 = 'tab:red'
+                    ax2 = axes[0].twinx()
+                    ax2.set_ylabel(f'{var2} Price', color=color2)
+                    ax2.plot(result_df['datetime'], result_df[f'close_{var2}'], color=color2, label=var2)
+                    ax2.tick_params(axis='y', labelcolor=color2)
+                    
+                    # 创建合并的图例
+                    lines1, labels1 = axes[0].get_legend_handles_labels()
+                    lines2, labels2 = ax2.get_legend_handles_labels()
+                    axes[0].legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+                else:
+                    # 如果只有一个变量，使用单一Y轴
+                    for var in sorted(variables):
+                        if var in aligned_data:
+                            axes[0].plot(result_df['datetime'], result_df[f'close_{var}'], label=var)
+                    axes[0].set_ylabel('Price')
+                    axes[0].legend()
                 
                 axes[0].set_title('Original Price Data')
-                axes[0].set_ylabel('Price')
-                axes[0].legend()
                 
                 # 2. 价差走势图
                 axes[1].plot(result_df['datetime'], result_df['spread'], color='green')
@@ -414,16 +575,36 @@ def main():
                 axes[2].set_xlabel('Spread')
                 axes[2].set_ylabel('Frequency')
                 
-                # 保存图表
-                plt.tight_layout()
-                output_img = os.path.join(script_dir, 'spread_analysis.png')
-                plt.savefig(output_img)
-                print(f"图表已保存为 '{output_img}'")
+                # 4. 滚动相关系数图（如果有）
+                if len(variables) >= 2 and 'rolling_corr' in result_df.columns:
+                    var1, var2 = sorted(variables)[:2]
+                    axes[3].plot(result_df['datetime'], result_df['rolling_corr'], color='purple')
+                    axes[3].set_title(f'Rolling Correlation between {var1} and {var2} (Window Size: {window_size})')
+                    axes[3].set_ylabel('Correlation Coefficient')
+                    
+                    # 自适应纵坐标范围，但最小要包含-1到1的范围
+                    y_min = max(min(result_df['rolling_corr'].min() * 1.1, -1.1), -1.1)
+                    y_max = min(max(result_df['rolling_corr'].max() * 1.1, 1.1), 1.1)
+                    axes[3].set_ylim(y_min, y_max)
+                    
+                    # 添加零线和1/-1线
+                    axes[3].axhline(y=0, color='gray', linestyle='-', alpha=0.3)
+                    axes[3].axhline(y=1, color='gray', linestyle='--', alpha=0.3)
+                    axes[3].axhline(y=-1, color='gray', linestyle='--', alpha=0.3)
+                    
+                    # 添加相关性强度区域
+                    axes[3].axhspan(0.7, 1, alpha=0.1, color='green', label='Strong Positive')
+                    axes[3].axhspan(-1, -0.7, alpha=0.1, color='red', label='Strong Negative')
+                    axes[3].legend()
                 
-                # 保存结果数据
-                output_file = os.path.join(script_dir, 'spread_data.csv')
-                result_df.to_csv(output_file, index=False)
-                print(f"价差数据已保存为 '{output_file}'")
+                # 保存组合图表
+                plt.tight_layout()
+                combined_chart_path = os.path.join(charts_dir, f"{file_base_name}_combined.png")
+                plt.savefig(combined_chart_path)
+                print(f"图表已保存为: '{combined_chart_path}'")
+                
+                print(f"已保存汇总图表到 '{charts_dir}' 目录")
+                
             except Exception as e:
                 print(f"计算价差时出错: {str(e)}")
                 import traceback
