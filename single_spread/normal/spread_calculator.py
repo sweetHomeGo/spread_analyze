@@ -235,12 +235,31 @@ def calculate_rolling_correlation(df, variables, window_size=20):
     
     # 取前两个变量计算相关系数
     var1, var2 = sorted(variables)[:2]
+    col1 = f'close_{var1}'
+    col2 = f'close_{var2}'
+    
+    # 确保这些列存在
+    if col1 not in df.columns or col2 not in df.columns:
+        print(f"警告：找不到列 {col1} 或 {col2}，无法计算相关系数")
+        print(f"可用列：{', '.join(df.columns)}")
+        return None
     
     # 确保数据按时间排序
     df = df.sort_values('datetime')
     
-    # 计算滚动相关系数
-    rolling_corr = df[f'close_{var1}'].rolling(window=window_size).corr(df[f'close_{var2}'])
+    # 检查是否有足够的数据点
+    if len(df) < window_size:
+        print(f"警告：数据点数量({len(df)})小于窗口大小({window_size})，无法计算滚动相关系数")
+        return None
+    
+    # 检查数据中是否存在NaN值
+    nan_count1 = df[col1].isna().sum()
+    nan_count2 = df[col2].isna().sum()
+    if nan_count1 > 0 or nan_count2 > 0:
+        print(f"警告：数据中存在NaN值（{col1}: {nan_count1}, {col2}: {nan_count2}），这可能影响相关系数计算")
+    
+    # 计算滚动相关系数，处理NaN值
+    rolling_corr = df[col1].rolling(window=window_size, min_periods=int(window_size/2)).corr(df[col2])
     
     return rolling_corr
 
@@ -470,6 +489,33 @@ def main():
                 aligned_df = df[df['datetime'].isin(common_times)].copy()
                 aligned_data[var] = aligned_df
         
+        # 添加这段代码来根据用户输入的日期范围过滤数据
+        if start_date or end_date:
+            print(f"根据用户指定的时间范围过滤数据: {start_date or '最早'} 到 {end_date or '最新'}")
+            for var in aligned_data:
+                df = aligned_data[var]
+                if start_date:
+                    start_datetime = pd.to_datetime(start_date)
+                    df = df[df['datetime'] >= start_datetime]
+                if end_date:
+                    end_datetime = pd.to_datetime(end_date)
+                    # 将结束日期调整到当天结束
+                    end_datetime = end_datetime.replace(hour=23, minute=59, second=59)
+                    df = df[df['datetime'] <= end_datetime]
+                aligned_data[var] = df
+                print(f"变量 {var} 过滤后的数据行数: {len(df)}")
+            
+            # 重新找出共同的时间点
+            common_times = find_common_timeframe(aligned_data)
+            print(f"过滤后找到 {len(common_times)} 个共同的时间点")
+            
+            # 再次对齐数据
+            for var in variables:
+                if var in aligned_data:
+                    df = aligned_data[var]
+                    aligned_df = df[df['datetime'].isin(common_times)].copy()
+                    aligned_data[var] = aligned_df
+        
         # 计算价差
         if len(common_times) > 0 and all(var in aligned_data for var in variables):
             result_df = pd.DataFrame({'datetime': common_times})
@@ -507,8 +553,16 @@ def main():
                 # 如果有至少两个变量，计算相关系数
                 if len(variables) >= 2:
                     var1, var2 = sorted(variables)[:2]
-                    correlation = result_df[f'close_{var1}'].corr(result_df[f'close_{var2}'])
-                    print(f"\n{var1}和{var2}的相关系数: {correlation:.4f}")
+                    col1 = f'close_{var1}'
+                    col2 = f'close_{var2}'
+                    
+                    # 确保这些列存在
+                    if col1 in result_df.columns and col2 in result_df.columns:
+                        # 使用dropna确保在计算相关系数时排除了NaN值
+                        correlation = result_df[[col1, col2]].dropna().corr().iloc[0, 1]
+                        print(f"\n{var1}和{var2}的相关系数: {correlation:.4f}")
+                    else:
+                        print(f"警告：找不到列 {col1} 或 {col2}，无法计算相关系数")
                 
                 # 保存结果数据到CSV文件 - 改为保存到spreads目录
                 csv_filename = f"{file_base_name}.csv"
